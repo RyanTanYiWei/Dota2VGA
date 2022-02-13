@@ -1,0 +1,195 @@
+---
+title: "Dota VGA"
+output: html_document
+---
+
+```{r}
+library(grid)
+library(png)
+library(magick)
+library(tidyverse)
+library(dplyr)
+
+#spatial
+library(rgdal)
+library(sp)
+library(raster)
+library(terra)
+library(sf)
+```
+
+#1) Make Individual Rasters
+
+Read Raw Files
+```{r}
+all_files <- list.files(path = "Map Files", pattern = '.png$', full.names = T, include.dirs = T) %>%
+  map(image_read)
+
+#check extraction
+namelist = list.files(path = "Map Files", pattern = '.png$', full.names = T, include.dirs = T)
+names = sub(".*Map Files/map_data_", "", sub(".png.*", "", namelist)) 
+names
+```
+
+Prepare Rasters
+```{r}
+
+for (i in 1:length(all_files)){
+  
+  version  = names[i]
+  img = all_files[[i]]
+  
+  #break files
+  topology = image_crop(img, geometry = "260x260")
+  trees = image_crop(img, geometry = "260x260+260")
+  boundaries = image_crop(img, geometry = "260x260+520")
+  nowards_1 = image_crop(img, geometry = "260x260+780")
+  nowards_2 = image_crop(img, geometry = "260x260+1040")
+  
+  #make transparent
+  trees = image_transparent(trees,"white")
+  #boundaries = image_transparent(boundaries,"white")
+  
+  #combine and make scale and transparent #original 260 x 260
+  dota = image_mosaic(c(boundaries,trees)) #%>% image_scale(geometry = "4096")
+  image_write(dota,paste("VGA Analysis/Rasters/",names[i],"_raster.png",sep=""))
+}
+
+
+```
+
+#2) Convert Rasters to Polygons
+
+```{r}
+#find filepaths for rasters
+raster_names = list.files(path = "VGA Analysis/Rasters", pattern = '.png$', full.names = T, include.dirs = T)
+
+#for (i in 1:1){
+for (i in 1:length(raster_names)){
+  #covert to raster 
+  r <- rast(raster_names[i])
+  p <- as.polygons(r)
+  final <- flip(p, "vertical")
+
+  #write polygons
+  st_write(st_as_sf(final), paste("VGA Analysis/Polygons/",names[i],".mif",sep="") ,driver= "MapInfo File")
+  
+  #write polylines
+  pl = readOGR(paste("VGA Analysis/Polygons/",names[i],".mif",sep=""), verbose = FALSE)
+  li = as(pl, 'SpatialLinesDataFrame')
+  writeOGR(li, paste("VGA Analysis/Polylines/",names[i],".mif",sep=""), verbose = FALSE, layer = names[i], driver= "MapInfo File")
+}
+
+```
+
+3) (MANUALLY) IMPORT AND FILL INTO GRAPHS
+
+
+#4) Run VGA
+
+```{r}
+#Manual Process, Import and to Grid
+all_graphs = list.files(path = "VGA Analysis/Graph_Import/", pattern = '.graph$', full.names = T, include.dirs = T)
+
+#Make a copy of original data
+file.copy(file.path(all_graphs), "VGA Analysis/Graph_Processed")
+
+#New Directory
+new_files = list.files(path = "VGA Analysis/Graph_Processed/", pattern = '.graph$', full.names = T, include.dirs = T)
+
+#Process VGA
+for (dir in new_files){
+  #Make VGA
+  rdepthmap::makeVGAGraph(dir)
+  vers = parse_number(dir)
+  #Run VGA
+  rdepthmap::VGA(dir, vgaMode = "visibility-global", radii = c("n"))
+}
+```
+
+-----------------------------------------------------------------------------------------------------
+
+#5) Collect Data
+```{r include=FALSE}
+new_files = list.files(path = "VGA Analysis/Graph_Processed/", pattern = '.graph$', full.names = T, include.dirs = T)
+
+#create dataframe
+data_list = list()
+
+#collect different maps in list
+for (dir in new_files){
+  #version = parse_number(dir)
+  data = rdepthmap::getPointmapData(dir)$map
+  data_list = append(data_list,data)
+  print(version)
+}
+```
+
+
+#6) Trial Plot (700x432)
+
+default plot
+```{r}
+for (i in 1:length(new_files)){
+  version = parse_number(new_files[i])
+  a = as(data_list[[i]],"SpatialPixelsDataFrame")
+  b = as(a,"SpatialPixelsDataFrame")
+  plot(b[, "Visual.Integration..HH."]) + title(paste0("v",version))
+}
+```
+
+plot by fixed values
+```{r}
+for (i in 1:length(new_files)){
+  version = parse_number(new_files[i])
+  a = as(data_list[[i]],"SpatialPixelsDataFrame")
+  b = as(a,"SpatialPixelsDataFrame")
+  
+  png(filename=paste("VGA Analysis/Diagrams/v",version,".png",sep = ""))
+  plot(b[, "Visual.Integration..HH."],zlim = c(2,14)) + title(paste0("v",version))
+  dev.off()
+}
+```
+
+Build Animation
+```{r}
+library(animation)
+library(magick)
+## make sure ImageMagick has been installed in your system
+saveGIF({
+  for (i in 1:length(new_files)){
+  version = parse_number(new_files[i])
+  a = as(data_list[[i]],"SpatialPixelsDataFrame")
+  b = as(a,"SpatialPixelsDataFrame")
+  plot(b[, "Visual.Integration..HH."],zlim = c(2,14)) + title(paste0("v",version))
+  }
+}, interval = 1, ani.width =700, ani.height = 432)
+```
+
+
+# 7a) Saving back to MIF for QGIS (Usual Size)
+```{r}
+new_files
+for (i in 1:length(new_files)){
+  version = parse_number(new_files[i])
+  a = as(data_list[[i]],"SpatialPixelsDataFrame")
+  b = as(a,"SpatialPixelsDataFrame")
+  writeOGR(obj=b, dsn=paste0("VGA Analysis/GIS Files/",version,".mif"), layer="00", driver="MapInfo File") # this is in geographical projection
+}
+```
+
+# 7b) Saving back to MIF for QGIS (Rescaled Size)
+```{r}
+for (i in 1:length(new_files)){
+  version = parse_number(new_files[i])
+  a = as(data_list[[i]],"SpatialPixelsDataFrame")
+  b = as(a,"SpatialPointsDataFrame")
+  sc = 4096/260
+  tf = SimilarityTransformation(as.data.frame(b),parameters=c(sc,0,sc,0))
+  e = applyTransformation(tf,b) 
+  writeOGR(obj=e, dsn=paste0("VGA Analysis/GIS Files/Stretched/",version,".mif"), layer="00", driver="MapInfo File") # this is in geographical projection
+}
+```
+
+
+
